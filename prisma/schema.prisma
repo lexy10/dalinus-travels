@@ -1,0 +1,391 @@
+// Prisma schema for the Edu-Travel Platform.
+// All entities from the design doc. PostgreSQL is the target.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users + auth + role records
+// ---------------------------------------------------------------------------
+
+model User {
+  id                          String    @id @default(uuid())
+  email                       String    @unique
+  passwordHash                String?
+  emailVerifiedAt             DateTime?
+  googleId                    String?   @unique
+  roles                       String[]  @default(["STUDENT_TRAVELER"])
+  accountStatus               String    @default("active")
+  profileComplete             Boolean   @default(false)
+  failedLoginCount            Int       @default(0)
+  lockedUntil                 DateTime?
+  inAppNotificationsEnabled   Boolean   @default(true)
+  createdAt                   DateTime  @default(now())
+
+  notifications  Notification[]
+  resetTokens    ResetToken[]
+  applications   Application[]
+  documents      Document[]
+  bookings       Booking[]
+  consultations  Consultation[]
+  recruiter      Recruiter?
+  partner        Partner?
+  blogArticles   BlogArticle[]
+
+  @@index([googleId])
+  @@map("users")
+}
+
+model ResetToken {
+  token     String   @id
+  email     String
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([email])
+  @@map("reset_tokens")
+}
+
+model Recruiter {
+  id                  String    @id @default(uuid())
+  userId              String    @unique
+  status              String    @default("pending") // pending | active | rejected
+  managerRecruiterId  String?
+  companyName         String
+  appliedAt           DateTime  @default(now())
+  decisionAt          DateTime?
+
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  manager   Recruiter?  @relation("RecruiterManager", fields: [managerRecruiterId], references: [id], onDelete: SetNull)
+  subAgents Recruiter[] @relation("RecruiterManager")
+  leads     Lead[]
+  applications Application[]
+
+  @@index([status])
+  @@index([managerRecruiterId])
+  @@map("recruiters")
+}
+
+model Partner {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  institutionName String
+  status          String   @default("active")
+  createdAt       DateTime @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  programs Program[]
+  leads    Lead[]
+
+  @@map("partners")
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Destination {
+  id                String    @id @default(uuid())
+  kind              String    // study | travel
+  name              String
+  country           String
+  costOfLiving      String?
+  visaInfo          String?
+  destinationGuide  String?
+  publishedAt       DateTime?
+
+  programs     Program[]
+  tourPackages TourPackage[]
+
+  @@index([kind])
+  @@map("destinations")
+}
+
+model Program {
+  id                   String    @id @default(uuid())
+  partnerId            String
+  destinationId        String
+  title                String
+  institutionName      String
+  studyLevel           String
+  fieldOfStudy         String
+  durationMonths       Int
+  tuitionMinor         Int
+  tuitionCurrency      String    @default("USD")
+  intakeDates          DateTime[]
+  entryRequirements    String    @default("")
+  applicationDeadline  DateTime?
+  deliveryMode         String    @default("on_campus")
+  status               String    @default("draft") // draft | published
+  createdAt            DateTime  @default(now())
+
+  partner      Partner       @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  destination  Destination   @relation(fields: [destinationId], references: [id], onDelete: Restrict)
+  applications Application[]
+
+  @@index([partnerId])
+  @@index([destinationId])
+  @@index([status])
+  @@map("programs")
+}
+
+model TourPackage {
+  id                 String   @id @default(uuid())
+  destinationId      String
+  title              String
+  itinerary          String
+  durationDays       Int
+  inclusions         String[]
+  priceMinor         Int
+  priceCurrency      String   @default("USD")
+  totalCapacity      Int
+  availabilityCount  Int
+  status             String   @default("draft")
+  createdAt          DateTime @default(now())
+
+  destination Destination @relation(fields: [destinationId], references: [id], onDelete: Restrict)
+  bookings    Booking[]
+
+  @@index([destinationId])
+  @@index([status])
+  @@map("tour_packages")
+}
+
+// ---------------------------------------------------------------------------
+// Applications + documents
+// ---------------------------------------------------------------------------
+
+model Application {
+  id                String   @id @default(uuid())
+  studentId         String
+  programId         String
+  recruiterId       String?
+  status            String   @default("Submitted")
+  submittedFields   Json
+  createdAt         DateTime @default(now())
+  statusUpdatedAt   DateTime @default(now()) @updatedAt
+
+  student   User       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  program   Program    @relation(fields: [programId], references: [id], onDelete: Cascade)
+  recruiter Recruiter? @relation(fields: [recruiterId], references: [id], onDelete: SetNull)
+  documents Document[]
+
+  @@unique([studentId, programId])
+  @@index([programId])
+  @@index([recruiterId])
+  @@index([status])
+  @@map("applications")
+}
+
+model Document {
+  id               String   @id @default(uuid())
+  ownerId          String
+  applicationId    String?
+  storageKey       String
+  originalFilename String
+  contentType      String
+  sizeBytes        Int
+  status           String   @default("stored")
+  createdAt        DateTime @default(now())
+
+  owner       User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+
+  @@index([ownerId])
+  @@index([applicationId])
+  @@map("documents")
+}
+
+// ---------------------------------------------------------------------------
+// Bookings + payments
+// ---------------------------------------------------------------------------
+
+model Booking {
+  id                       String    @id @default(uuid())
+  travelerId               String
+  tourPackageId            String
+  reservedPlaces           Int
+  status                   String    @default("PendingPayment")
+  txRef                    String    @unique
+  providerTransactionId    String?
+  availabilityDecremented  Boolean   @default(false)
+  amountMinor              Int
+  currency                 String    @default("USD")
+  createdAt                DateTime  @default(now())
+  confirmedAt              DateTime?
+
+  traveler    User        @relation(fields: [travelerId], references: [id], onDelete: Cascade)
+  tourPackage TourPackage @relation(fields: [tourPackageId], references: [id], onDelete: Restrict)
+  payment     Payment?
+
+  @@index([travelerId])
+  @@index([tourPackageId])
+  @@index([status])
+  @@map("bookings")
+}
+
+model Payment {
+  id                     String   @id @default(uuid())
+  bookingId              String   @unique
+  provider               String   @default("flutterwave")
+  txRef                  String   @unique
+  providerTransactionId  String?
+  status                 String   @default("initiated")
+  amountMinor            Int
+  currency               String   @default("USD")
+  rawVerifyPayload       Json?
+  attempts               Int      @default(0)
+  createdAt              DateTime @default(now())
+  resolvedAt             DateTime?
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
+
+// ---------------------------------------------------------------------------
+// Consultations
+// ---------------------------------------------------------------------------
+
+model ConsultationSlot {
+  id                    String   @id @default(uuid())
+  startsAt              DateTime
+  endsAt                DateTime
+  status                String   @default("available")
+  bookedConsultationId  String?  @unique
+
+  bookedConsultation Consultation? @relation(fields: [bookedConsultationId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([startsAt])
+  @@map("consultation_slots")
+}
+
+model Consultation {
+  id            String   @id @default(uuid())
+  userId        String?
+  name          String
+  contactMethod String
+  contactKind   String   // email | phone
+  slotId        String
+  status        String   @default("booked")
+  createdAt     DateTime @default(now())
+
+  user User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  slot ConsultationSlot?
+
+  @@index([userId])
+  @@map("consultations")
+}
+
+// ---------------------------------------------------------------------------
+// Leads
+// ---------------------------------------------------------------------------
+
+model Lead {
+  id                       String   @id @default(uuid())
+  source                   String   // contact_form | recruiter | partner | admin
+  name                     String
+  email                    String
+  message                  String?
+  attributedRecruiterId    String?
+  attributedPartnerId      String?
+  status                   String   @default("new")
+  createdAt                DateTime @default(now())
+
+  attributedRecruiter Recruiter? @relation(fields: [attributedRecruiterId], references: [id], onDelete: SetNull)
+  attributedPartner   Partner?   @relation(fields: [attributedPartnerId], references: [id], onDelete: SetNull)
+
+  @@index([attributedRecruiterId])
+  @@index([attributedPartnerId])
+  @@index([status])
+  @@map("leads")
+}
+
+// ---------------------------------------------------------------------------
+// CMS content
+// ---------------------------------------------------------------------------
+
+model BlogArticle {
+  id          String    @id @default(uuid())
+  authorId    String
+  title       String
+  slug        String    @unique
+  body        String
+  status      String    @default("draft")
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  author User @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([status, publishedAt])
+  @@map("blog_articles")
+}
+
+model MarketingPage {
+  id                String   @id @default(uuid())
+  key               String   @unique
+  localizedContent  Json
+  status            String   @default("published")
+  updatedAt         DateTime @updatedAt
+
+  @@map("marketing_pages")
+}
+
+model Statistic {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  valueType String   // count | rate
+  value     Float
+  updatedAt DateTime @updatedAt
+
+  @@map("statistics")
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id              String    @id @default(uuid())
+  userId          String?
+  channel         String
+  type            String
+  payload         Json
+  recipientEmail  String
+  status          String    @default("pending")
+  attemptCount    Int       @default(0)
+  lastAttemptAt   DateTime?
+  deliveredAt     DateTime?
+  createdAt       DateTime  @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([status])
+  @@map("notifications")
+}
+
+// ---------------------------------------------------------------------------
+// Consent
+// ---------------------------------------------------------------------------
+
+model CookieConsent {
+  id          String   @id @default(uuid())
+  visitorId   String
+  choice      String   // accepted | rejected
+  recordedAt  DateTime @default(now())
+
+  @@index([visitorId, recordedAt])
+  @@map("cookie_consents")
+}
